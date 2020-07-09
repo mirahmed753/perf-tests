@@ -5,7 +5,7 @@ TAG = 2.25
 
 REPO = gcr.io/k8s-testimages
 
-test: perfdash.go parser.go config.go downloader.go google-gcs-downloader.go
+test: perfdash.go parser.go config.go metrics-downloader-helper.go metrics-downloader.go
 	go test
 
 perfdash: test
@@ -27,4 +27,9 @@ push: container
 	gcloud docker -s $(REPO) -- push $(REPO)/perfdash:$(TAG)
 
 clean:
+<<<<<<< HEAD
 	rm -f perfdash
+=======
+	rm -f perfdash
+
+>>>>>>> e8b678e0... * Convert bucketUtil to an interface.

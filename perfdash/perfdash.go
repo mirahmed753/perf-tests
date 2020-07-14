@@ -19,10 +19,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"k8s.io/klog"
 	"net/http"
 	"os"
 	"time"
+
+	"k8s.io/klog"
 
 	"github.com/spf13/pflag"
 )
@@ -46,10 +47,14 @@ var (
 
 	// Storage Service Bucket and Path flags
 	logsBucket = pflag.String("logsBucket", "kubernetes-jenkins", "Name of the data bucket")
-	logsPath = pflag.String("logsPath", "logs", "Path to the logs inside the logs bucket")
+	logsPath   = pflag.String("logsPath", "logs", "Path to the logs inside the logs bucket")
 
 	// Google GCS Specific flags
 	credentialPath = pflag.String("credentialPath", "", "Path to the gcs credential json")
+
+	// AWS S3 Specific flags
+	s3Mode    = pflag.Bool("s3Mode", false, "If true, download metrics from AWS S3")
+	awsRegion = pflag.String("awsRegion", "us-west-2", "AWS region where s3 bucket lives")
 )
 
 func initDownloaderOptions() {
@@ -80,12 +85,15 @@ func run() error {
 		options.DefaultBuildsCount = maxBuilds
 	}
 
-	gcs, err := NewGCSMetricsBucket(*logsBucket, *logsPath, *credentialPath)
+	metricsBkt, err := NewGCSMetricsBucket(*logsBucket, *logsPath, *credentialPath)
+	if *s3Mode {
+		metricsBkt, err = NewS3MetricsBucket(*logsBucket, *logsPath, *awsRegion)
+	}
 	if err != nil {
 		panic(err)
 	}
 
-	downloader := NewDownloader(options, gcs)
+	downloader := NewDownloader(options, metricsBkt)
 	result := make(JobToCategoryData)
 
 	if !*www {

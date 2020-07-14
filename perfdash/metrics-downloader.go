@@ -19,8 +19,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/ioutil"
-	"k8s.io/klog"
 	"path"
 	"path/filepath"
 	"sort"
@@ -28,10 +28,16 @@ import (
 	"strings"
 	"sync"
 
+	"k8s.io/klog"
+
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"k8s.io/kubernetes/test/e2e/perftype"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 // DownloaderOptions is an options for Downloader.
@@ -46,8 +52,8 @@ type DownloaderOptions struct {
 
 // Downloader that gets data about results from a storage service (GCS) repository.
 type Downloader struct {
-	MetricsBkt     MetricsBucket
-	Options        *DownloaderOptions
+	MetricsBkt MetricsBucket
+	Options    *DownloaderOptions
 }
 
 // NewDownloader creates a new Downloader.
@@ -281,6 +287,109 @@ func (b *GCSMetricsBucket) GetFile(job string, buildNumber int, path string) ([]
 	if err != nil {
 		return nil, err
 	}
+	return data, nil
+}
+
+// S3MetricsBucket that creates a AWS S3 client to fetch data.
+type S3MetricsBucket struct {
+	client  *s3.S3
+	bucket  *string
+	logPath string
+}
+
+// NewS3MetricsBucket creates a new S3MetricsBucket.
+func NewS3MetricsBucket(bucket, path, region string) (MetricsBucket, error) {
+	sess, err := session.NewSession(&aws.Config{
+		Region: aws.String(region)},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	s3Client := s3.New(sess)
+
+	return &S3MetricsBucket{
+		client:  s3Client,
+		bucket:  aws.String(bucket),
+		logPath: path,
+	}, nil
+}
+
+// GetBuildNumbers fetches the build numbers from an S3 Bucket.
+func (fetcher *S3MetricsBucket) GetBuildNumbers(job string) ([]int, error) {
+	var builds []int
+	jobPrefix := joinStringsAndInts(fetcher.logPath, job) + "/"
+	klog.Infof("%s", jobPrefix)
+
+	params := &s3.ListObjectsV2Input{
+		Bucket:    fetcher.bucket,
+		Prefix:    aws.String(jobPrefix),
+		Delimiter: aws.String("/"),
+	}
+
+	objects, _ := fetcher.client.ListObjectsV2(params)
+
+	for _, key := range objects.CommonPrefixes {
+		build := *key.Prefix
+		build = strings.TrimPrefix(build, jobPrefix)
+		build = strings.TrimSuffix(build, "/")
+
+		buildNo, err := strconv.Atoi(build)
+		if err != nil {
+			return nil, fmt.Errorf("unknown build name convention: %s", build)
+		}
+		builds = append(builds, buildNo)
+	}
+
+	return builds, nil
+}
+
+// ListFilesInBuild fetches the files in the build from S3.
+func (fetcher *S3MetricsBucket) ListFilesInBuild(job string, buildNumber int, prefix string) ([]string, error) {
+	var files []string
+	jobPrefix := joinStringsAndInts(fetcher.logPath, job, buildNumber, prefix)
+
+	params := &s3.ListObjectsV2Input{
+		Bucket: fetcher.bucket,
+		Prefix: aws.String(jobPrefix),
+	}
+
+	result := func(objects *s3.ListObjectsV2Output, lastPage bool) bool {
+		for _, key := range objects.Contents {
+			files = append(files, *key.Key)
+		}
+
+		return true
+	}
+
+	err := fetcher.client.ListObjectsV2Pages(params, result)
+	if err != nil {
+		return nil, err
+	}
+
+	return files, nil
+}
+
+// GetFile fetches the file from the S3 bucket.
+func (fetcher *S3MetricsBucket) GetFile(job string, buildNumber int, path string) ([]byte, error) {
+	filePath := joinStringsAndInts(fetcher.logPath, job, buildNumber, path)
+
+	params := &s3.GetObjectInput{
+		Bucket: fetcher.bucket,
+		Key:    aws.String(filePath),
+	}
+
+	req, err := fetcher.client.GetObject(params)
+	if err != nil {
+		return nil, err
+	}
+
+	var reader io.Reader = req.Body
+	data, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
 	return data, nil
 }
 
